@@ -23,3 +23,16 @@ bun run dev               # scan QR yang muncul, sekali saja
 - Login = scan QR sekali; sesi di `.wwebjs_auth/` (jangan di-commit).
 - Kirim ke nomor sendiri masuk chat "Pesan ke Diri Sendiri" (mungkin tanpa notif push).
 - Jaga tetap kirim-saja — jangan tambah balasan LLM.
+
+## Produksi (pm2)
+Biar bot hidup terus + restart sendiri kalau mati/macet:
+```sh
+pm2 start ecosystem.config.cjs   # jalankan (butuh sudah scan QR sekali)
+pm2 save                         # ingat daftar proses
+pm2 startup                      # ikuti perintah sudo yang muncul -> hidup lagi tiap reboot
+pm2 logs wa-bot                  # lihat log
+pm2 restart wa-bot               # restart manual
+```
+Bot punya **watchdog**: kalau macet `starting`/`disconnected` > 3 menit, dia keluar
+sendiri biar pm2 me-restart (reconnect dari sesi). `need_qr` TIDAK di-restart otomatis —
+itu berarti sesi hilang dan **perlu scan QR ulang** (cek `pm2 logs`).

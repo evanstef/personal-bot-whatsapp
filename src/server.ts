@@ -36,6 +36,36 @@ client.on("disconnected", (reason) => {
 });
 void client.initialize();
 
+// --- Pemulihan otomatis: bereskan Chromium lalu keluar, biar pm2 me-restart ---
+async function keluarUntukRestart(alasan: string): Promise<never> {
+  console.error(`[watchdog] ${alasan} — tutup sesi lalu keluar`);
+  try {
+    await Promise.race([client.destroy(), new Promise((r) => setTimeout(r, 5000))]);
+  } catch {
+    // abaikan; yang penting proses keluar supaya di-restart bersih
+  }
+  process.exit(1);
+}
+
+// pm2 mengirim sinyal ini saat stop/restart. Tutup Chromium supaya tidak jadi
+// proses yatim yang merebut sesi (persis kekacauan yang pernah terjadi).
+process.on("SIGTERM", () => void keluarUntukRestart("SIGTERM"));
+process.on("SIGINT", () => void keluarUntukRestart("SIGINT"));
+
+// Watchdog: kalau macet "starting"/"disconnected" kelamaan, keluar untuk di-restart.
+// "need_qr" TIDAK dipicu — restart cuma balik ke QR, itu butuh scan manusia.
+const BATAS_TAK_READY_MS = 3 * 60 * 1000;
+let terakhirSehat = Date.now();
+setInterval(() => {
+  if (status === "ready" || status === "need_qr") {
+    terakhirSehat = Date.now();
+    return;
+  }
+  if (Date.now() - terakhirSehat > BATAS_TAK_READY_MS) {
+    void keluarUntukRestart(`macet status "${status}" > ${BATAS_TAK_READY_MS / 1000}s`);
+  }
+}, 30_000);
+
 const app = express();
 app.use(express.json());
 
