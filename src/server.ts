@@ -1,70 +1,106 @@
-// Layanan pengirim WhatsApp pribadi.
+// Layanan pengirim WhatsApp pribadi. Baileys (WebSocket murni, tanpa browser).
 import express, { type NextFunction, type Request, type Response } from "express";
-import * as qrcode from "qrcode-terminal";
-import { Client, LocalAuth } from "whatsapp-web.js";
+import qrcode from "qrcode-terminal";
+import pino from "pino";
+import type { WASocket } from "@whiskeysockets/baileys";
 
 type Status = "starting" | "need_qr" | "ready" | "disconnected";
 
 const PORT = Number(process.env.PORT) || 3900;
 const API_KEY = process.env.API_KEY || "";
+const AUTH_DIR = process.env.AUTH_DIR || "./.baileys_auth";
+
+const RECONNECT_MIN_MS = 3_000;
+const RECONNECT_MAX_MS = 60_000;
 
 let status: Status = "starting";
 let lastQr: string | null = null;
+let sock: WASocket | null = null;
+let jedaSambung = RECONNECT_MIN_MS;
 
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: "./.wwebjs_auth" }),
-  puppeteer: {
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-  },
-});
+const logger = pino({ level: "silent" });
 
-client.on("qr", (qr: string) => {
-  lastQr = qr;
-  status = "need_qr";
-  qrcode.generate(qr, { small: true });
-  console.log("[wa] Scan QR: WhatsApp HP > Perangkat Tertaut > Tautkan perangkat");
-});
-client.on("ready", () => {
-  status = "ready";
-  lastQr = null;
-  console.log("[wa] siap mengirim");
-});
-client.on("disconnected", (reason) => {
-  status = "disconnected";
-  console.log("[wa] terputus:", reason);
-});
-void client.initialize();
-
-// --- Pemulihan otomatis: bereskan Chromium lalu keluar, biar pm2 me-restart ---
-async function keluarUntukRestart(alasan: string): Promise<never> {
-  console.error(`[watchdog] ${alasan} — tutup sesi lalu keluar`);
-  try {
-    await Promise.race([client.destroy(), new Promise((r) => setTimeout(r, 5000))]);
-  } catch {
-    // abaikan; yang penting proses keluar supaya di-restart bersih
-  }
-  process.exit(1);
+/** Pemanggil memakai gaya whatsapp-web.js (628xxx@c.us); Baileys mau @s.whatsapp.net. */
+export function keJid(tujuan: string): string {
+  const bersih = tujuan.trim();
+  if (bersih.endsWith("@g.us") || bersih.endsWith("@s.whatsapp.net")) return bersih;
+  const angka = bersih.split("@")[0].replace(/\D/g, "");
+  return `${angka}@s.whatsapp.net`;
 }
 
-// pm2 mengirim sinyal ini saat stop/restart. Tutup Chromium supaya tidak jadi
-// proses yatim yang merebut sesi (persis kekacauan yang pernah terjadi).
-process.on("SIGTERM", () => void keluarUntukRestart("SIGTERM"));
-process.on("SIGINT", () => void keluarUntukRestart("SIGINT"));
+async function sambung(): Promise<void> {
+  // Baileys paket CJS: `import` statis bikin makeWASocket undefined di Node.
+  // Impor dinamis + destrukturisasi `default` — satu-satunya bentuk yang jalan.
+  const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion,
+    DisconnectReason,
+    Browsers,
+  } = await import("@whiskeysockets/baileys");
 
-// Watchdog: kalau macet "starting"/"disconnected" kelamaan, keluar untuk di-restart.
-// "need_qr" TIDAK dipicu — restart cuma balik ke QR, itu butuh scan manusia.
-const BATAS_TAK_READY_MS = 3 * 60 * 1000;
-let terakhirSehat = Date.now();
-setInterval(() => {
-  if (status === "ready" || status === "need_qr") {
-    terakhirSehat = Date.now();
-    return;
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+  let version: [number, number, number] | undefined;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch {
+    version = undefined; // pakai versi bawaan paket
   }
-  if (Date.now() - terakhirSehat > BATAS_TAK_READY_MS) {
-    void keluarUntukRestart(`macet status "${status}" > ${BATAS_TAK_READY_MS / 1000}s`);
-  }
-}, 30_000);
+
+  const s = makeWASocket({
+    version,
+    auth: state,
+    logger,
+    browser: Browsers.ubuntu("Job Match Bot"),
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+  });
+  sock = s;
+
+  s.ev.on("creds.update", saveCreds);
+
+  s.ev.on("connection.update", (u) => {
+    const { connection, lastDisconnect, qr } = u;
+
+    if (qr) {
+      lastQr = qr;
+      status = "need_qr";
+      qrcode.generate(qr, { small: true });
+      console.log("[wa] Scan QR: WhatsApp HP > Perangkat Tertaut > Tautkan perangkat");
+    }
+
+    if (connection === "open") {
+      status = "ready";
+      lastQr = null;
+      jedaSambung = RECONNECT_MIN_MS;
+      console.log("[wa] siap mengirim sebagai", s.user?.id);
+    }
+
+    if (connection === "close") {
+      const kode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output
+        ?.statusCode;
+      const keluar = kode === DisconnectReason.loggedOut;
+      console.log(`[wa] terputus (kode: ${kode}, logout: ${keluar})`);
+
+      if (keluar) {
+        // sesi dibatalkan dari HP — hanya scan QR baru yang bisa memulihkan
+        status = "need_qr";
+        void sambung();
+      } else {
+        status = "disconnected";
+        setTimeout(() => void sambung(), jedaSambung);
+        // backoff meredam loop putus-sambung saat jaringan bermasalah
+        jedaSambung = Math.min(jedaSambung * 2, RECONNECT_MAX_MS);
+      }
+    }
+  });
+}
+
+void sambung();
+
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));
 
 const app = express();
 app.use(express.json());
@@ -100,13 +136,13 @@ app.post("/send", auth, async (req: Request, res: Response): Promise<void> => {
     res.status(400).json({ error: "chatId & message wajib diisi" });
     return;
   }
-  if (status !== "ready") {
+  if (status !== "ready" || !sock) {
     res.status(503).json({ error: `Belum siap. Status: ${status}` });
     return;
   }
   try {
-    const sent = await client.sendMessage(chatId, message);
-    res.json({ ok: true, id: sent?.id?._serialized ?? null });
+    const sent = await sock.sendMessage(keJid(chatId), { text: message });
+    res.json({ ok: true, id: sent?.key?.id ?? null });
   } catch (e) {
     res.status(500).json({ error: String((e as Error)?.message ?? e) });
   }

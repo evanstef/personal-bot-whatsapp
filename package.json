@@ -1,7 +1,7 @@
 {
   "name": "personal-bot-whatsapp",
   "version": "0.1.0",
-  "description": "Layanan pengirim WhatsApp pribadi (whatsapp-web.js) dipanggil lewat HTTP",
+  "description": "Layanan pengirim WhatsApp pribadi (Baileys, tanpa browser) dipanggil lewat HTTP",
   "module": "src/server.ts",
   "type": "module",
   "scripts": {
@@ -10,14 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
     "express": "^4.21.2",
-    "puppeteer": "^23.11.1",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.3"
   }
 }
