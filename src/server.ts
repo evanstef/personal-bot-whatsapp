@@ -17,6 +17,19 @@ let status: Status = "starting";
 let lastQr: string | null = null;
 let sock: WASocket | null = null;
 let jedaSambung = RECONNECT_MIN_MS;
+let antre: NodeJS.Timeout | null = null;
+let pernahTersambung = false;
+
+/** Hanya boleh ada SATU socket hidup. Tanpa penjaga ini tiap penutupan memicu
+ *  socket baru sementara yang lama tetap jalan — puluhan socket menerbitkan QR
+ *  masing-masing, dan QR yang di-scan orang milik socket yang sudah mati. */
+function jadwalkanSambung(ms: number): void {
+  if (antre) return;
+  antre = setTimeout(() => {
+    antre = null;
+    void sambung();
+  }, ms);
+}
 
 const logger = pino({ level: "silent" });
 
@@ -55,6 +68,9 @@ async function sambung(): Promise<void> {
     browser: Browsers.ubuntu("Job Match Bot"),
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    // umur QR sebelum socket ditutup; bawaannya 60 dtk, terlalu mepet untuk
+    // alur "buka terminal, ambil HP, cari menu Perangkat Tertaut"
+    qrTimeout: 180_000,
   });
   sock = s;
 
@@ -73,6 +89,7 @@ async function sambung(): Promise<void> {
     if (connection === "open") {
       status = "ready";
       lastQr = null;
+      pernahTersambung = true;
       jedaSambung = RECONNECT_MIN_MS;
       console.log("[wa] siap mengirim sebagai", s.user?.id);
     }
@@ -81,15 +98,31 @@ async function sambung(): Promise<void> {
       const kode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output
         ?.statusCode;
       const keluar = kode === DisconnectReason.loggedOut;
-      console.log(`[wa] terputus (kode: ${kode}, logout: ${keluar})`);
 
-      if (keluar) {
-        // sesi dibatalkan dari HP — hanya scan QR baru yang bisa memulihkan
+      // socket lama WAJIB ditutup sebelum yang baru dibuat
+      try {
+        s.end(undefined);
+      } catch {
+        // sudah tertutup sendiri; tidak apa-apa
+      }
+      if (sock === s) sock = null;
+
+      if (keluar && !pernahTersambung) {
+        // Belum pernah tertaut: 401 di sini berarti QR kedaluwarsa, BUKAN logout.
+        // Sambung ulang santai untuk menerbitkan QR baru.
+        console.log("[wa] QR kedaluwarsa, menerbitkan yang baru");
         status = "need_qr";
-        void sambung();
+        lastQr = null;
+        jadwalkanSambung(3_000);
+      } else if (keluar) {
+        // Pernah tertaut lalu ditolak = sesi benar-benar dibatalkan dari HP.
+        console.log("[wa] sesi dibatalkan dari HP — perlu tautkan ulang");
+        status = "need_qr";
+        jadwalkanSambung(5_000);
       } else {
+        console.log(`[wa] terputus (kode: ${kode}), menyambung ulang`);
         status = "disconnected";
-        setTimeout(() => void sambung(), jedaSambung);
+        jadwalkanSambung(jedaSambung);
         // backoff meredam loop putus-sambung saat jaringan bermasalah
         jedaSambung = Math.min(jedaSambung * 2, RECONNECT_MAX_MS);
       }
