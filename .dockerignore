@@ -1,0 +1,13 @@
+# ⚠️ .wwebjs_auth JANGAN ikut ke image — sesi harus datang dari volume,
+# kalau ikut ter-bake dua bot berebut sesi yang sama dan WhatsApp membatalkannya.
+.wwebjs_auth/
+.wwebjs_cache/
+
+node_modules/
+dist/
+.git/
+.env
+*.log
+
+# core dump Chrome (ratusan MB)
+core

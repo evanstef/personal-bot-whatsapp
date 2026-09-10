@@ -4,3 +4,4 @@ dist/
 .wwebjs_cache/
 .env
 *.log
+core
