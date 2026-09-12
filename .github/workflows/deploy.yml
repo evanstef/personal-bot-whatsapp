@@ -48,4 +48,7 @@ jobs:
             export WA_BOT_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/personal-bot-whatsapp:sha-${{ github.sha }}
             docker compose --env-file .env -f docker-compose.prod.yml pull wa-bot
             docker compose --env-file .env -f docker-compose.prod.yml up -d wa-bot
-            docker image prune -f
+            # -a: buang image bertag yang tak dipakai container, bukan cuma yang dangling.
+            # Tanpa -a, tiap deploy menumpuk image lama selamanya (prune-nya nol sasaran).
+            # Versi lama tetap ada di Docker Hub, jadi rollback masih bisa lewat pull.
+            docker image prune -af
