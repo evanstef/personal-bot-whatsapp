@@ -1,4 +1,6 @@
 // Layanan pengirim WhatsApp pribadi. Baileys (WebSocket murni, tanpa browser).
+import fs from "node:fs";
+import path from "node:path";
 import express, { type NextFunction, type Request, type Response } from "express";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
@@ -19,6 +21,34 @@ let sock: WASocket | null = null;
 let jedaSambung = RECONNECT_MIN_MS;
 let antre: NodeJS.Timeout | null = null;
 let pernahTersambung = false;
+
+/** Buang sesi Signal per-perangkat, sisakan identitas & kunci akun.
+ *
+ * Sesi bisa melenceng dari lawan bicaranya setiap kali koneksi terputus: kunci
+ * di satu sisi maju, sisi lain tidak. Akibatnya pesan terkirim tapi TIDAK BISA
+ * DIBACA — penerima melihat "Menunggu pesan ini", sementara di sisi kita semua
+ * tampak sukses. Gagal total tanpa satu pun error yang bisa ditangkap.
+ *
+ * Menghapusnya memaksa Baileys berunding ulang saat kiriman berikutnya. Murah:
+ * berkasnya dibuat malas, jadi selama tidak ada yang dikirim, tidak ada biaya.
+ *
+ * ⚠️ HANYA session-*.json. creds.json = identitas perangkat (hilang = scan QR
+ * ulang); pre-key / app-state / sender-key juga jangan disentuh.
+ */
+function buangSesi(): number {
+  let jumlah = 0;
+  try {
+    for (const nama of fs.readdirSync(AUTH_DIR)) {
+      if (nama.startsWith("session-") && nama.endsWith(".json")) {
+        fs.rmSync(path.join(AUTH_DIR, nama), { force: true });
+        jumlah++;
+      }
+    }
+  } catch {
+    // folder belum ada (belum pernah tertaut) — tidak apa-apa
+  }
+  return jumlah;
+}
 
 /** Hanya boleh ada SATU socket hidup. Tanpa penjaga ini tiap penutupan memicu
  *  socket baru sementara yang lama tetap jalan — puluhan socket menerbitkan QR
@@ -91,7 +121,11 @@ async function sambung(): Promise<void> {
       lastQr = null;
       pernahTersambung = true;
       jedaSambung = RECONNECT_MIN_MS;
-      console.log("[wa] siap mengirim sebagai", s.user?.id);
+
+      // Sesi lama dibuang tiap koneksi terbuka — putus-sambung itu justru pemicu
+      // melencengnya kunci, dan ini satu-satunya titik yang pasti terlewati.
+      const dibuang = buangSesi();
+      console.log(`[wa] siap mengirim sebagai ${s.user?.id} (${dibuang} sesi lama dibuang)`);
     }
 
     if (connection === "close") {
